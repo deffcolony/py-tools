@@ -3,10 +3,11 @@ import json
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QListWidget, QLabel, QLineEdit, QListWidgetItem,
                              QSplitter, QDialogButtonBox, QMessageBox, QWidget,
-                             QSizePolicy)
-from PyQt6.QtCore import Qt, QSize
+                             QSizePolicy, QTableWidget, QTableWidgetItem, 
+                             QHeaderView, QAbstractItemView)
+from PyQt6.QtCore import Qt, QSize, QSettings, QDateTime
+
 from components.db_manager import DBManager
-# --- UPDATED IMPORT ---
 from components.prompt import PromptItemWidget
 from components.db_selector import DBSelector 
 from components.styles import apply_class, C_PRIMARY
@@ -19,7 +20,7 @@ class PromptStateDialog(QDialog):
         
         title = "LOAD PROMPT" if mode == "load" else "SAVE PROMPT"
         self.setWindowTitle(f"{title}")
-        self.resize(1000, 700)
+        self.resize(1100, 700) # Made slightly wider to fit table and preview
         
         # Main Layout
         layout = QVBoxLayout(self)
@@ -34,16 +35,30 @@ class PromptStateDialog(QDialog):
         # --- 2. Central Area ---
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Left: Names List
+        # Left: Search & Names Table
         list_container = QWidget()
         list_layout = QVBoxLayout(list_container)
         list_layout.setContentsMargins(0,0,0,0)
+        
         list_layout.addWidget(QLabel("EXISTING PROMPTS:"))
         
-        self.list_widget = QListWidget()
-        self.list_widget.itemSelectionChanged.connect(self.on_selection_change)
-        self.list_widget.itemDoubleClicked.connect(self.handle_double_click)
-        list_layout.addWidget(self.list_widget)
+        # Search Bar
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("Search prompts by name...")
+        self.search_bar.textChanged.connect(self.filter_prompts)
+        self.search_bar.setFixedHeight(30)
+        list_layout.addWidget(self.search_bar)
+        
+        # Table Widget (Replaces QListWidget)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Prompt Name", "Last Activity Date"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.itemSelectionChanged.connect(self.on_selection_change)
+        self.table.itemDoubleClicked.connect(self.handle_double_click)
+        list_layout.addWidget(self.table)
         
         # Right: Visual Preview (Using Read-Only Prompt Items)
         preview_container = QWidget()
@@ -59,7 +74,7 @@ class PromptStateDialog(QDialog):
 
         splitter.addWidget(list_container)
         splitter.addWidget(preview_container)
-        splitter.setSizes([300, 700])
+        splitter.setSizes([450, 650])
         layout.addWidget(splitter)
 
         # --- 3. Footer ---
@@ -104,23 +119,70 @@ class PromptStateDialog(QDialog):
         self.refresh_list()
         self.preview_list.clear()
 
+    def filter_prompts(self, text):
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item:
+                match = text.lower() in item.text().lower()
+                self.table.setRowHidden(row, not match)
+
     def refresh_list(self):
-        self.list_widget.clear()
+        settings = QSettings("PyTools", "PromptBuilder")
+        registry = settings.value("prompt_registry", {})
+        if not isinstance(registry, dict): registry = {}
+        
+        self.table.setRowCount(0)
+        self.table.setSortingEnabled(False) # Disable sorting while loading to prevent UI stutters
+        
         try:
             prompts = DBManager.get_all_prompts()
+            db_names = []
+            
+            # Extract names safely from sqlite3.Row or dictionaries
             for row in prompts:
-                self.list_widget.addItem(f"{row['name']}")
+                try:
+                    if hasattr(row, 'keys') or isinstance(row, dict):
+                        if 'name' in row.keys(): db_names.append(str(row['name']))
+                        else: db_names.append(str(row[1] if len(row) > 1 else row[0]))
+                    elif isinstance(row, (tuple, list)):
+                        db_names.append(str(row[1] if len(row) > 1 else row[0]))
+                    else:
+                        db_names.append(str(row))
+                except: pass
+
+            all_names = set(registry.keys()).union(set(db_names))
+            self.table.setRowCount(len(all_names))
+            
+            for row_idx, name in enumerate(all_names):
+                name_str = str(name)
+                date_str = str(registry.get(name_str, "Legacy Save (Unknown)"))
+                
+                item_name = QTableWidgetItem(name_str)
+                item_date = QTableWidgetItem(date_str)
+                
+                item_name.setFlags(item_name.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item_date.setFlags(item_date.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                
+                self.table.setItem(row_idx, 0, item_name)
+                self.table.setItem(row_idx, 1, item_date)
+                
+            self.table.setSortingEnabled(True)
+            self.table.sortItems(1, Qt.SortOrder.DescendingOrder)
+            
         except Exception as e:
-            self.list_widget.addItem(f"Error reading DB")
+            self.table.setRowCount(1)
+            self.table.setItem(0, 0, QTableWidgetItem("Error reading DB"))
             print(e)
 
     def on_selection_change(self):
-        item = self.list_widget.currentItem()
-        if not item:
+        selected = self.table.selectedItems()
+        if not selected:
             self.preview_list.clear()
             return
             
-        name = item.text()
+        row = selected[0].row()
+        name = self.table.item(row, 0).text()
+        
         if name == "Error reading DB": return
 
         if self.mode == "save":
@@ -161,16 +223,24 @@ class PromptStateDialog(QDialog):
             self.preview_list.addItem(list_item)
             self.preview_list.setItemWidget(list_item, widget)
 
-    def handle_double_click(self):
+    def handle_double_click(self, item):
+        row = item.row()
+        name = self.table.item(row, 0).text()
+        if self.mode == "save":
+            self.ln_name.setText(name)
         self.validate_and_accept()
 
     def validate_and_accept(self):
         if self.mode == "load":
-            item = self.list_widget.currentItem()
-            if not item or item.text() == "Error reading DB":
+            selected = self.table.selectedItems()
+            if not selected:
                 QMessageBox.warning(self, "Selection Required", "Please select a valid prompt to load.")
                 return
-            self.selected_name = item.text()
+            
+            name = self.table.item(selected[0].row(), 0).text()
+            if name == "Error reading DB": return
+            
+            self.selected_name = name
             self.accept()
 
         elif self.mode == "save":
@@ -179,7 +249,7 @@ class PromptStateDialog(QDialog):
                 QMessageBox.warning(self, "Name Required", "Please enter a name for the prompt.")
                 return
             
-            existing_items = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+            existing_items = [self.table.item(i, 0).text() for i in range(self.table.rowCount())]
             if name in existing_items:
                 reply = QMessageBox.question(
                     self, "Confirm Overwrite", 

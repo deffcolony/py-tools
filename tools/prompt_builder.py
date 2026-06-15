@@ -3,27 +3,24 @@ import os
 from PyQt6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QListWidget, QListWidgetItem, QTextEdit, QLabel,
                              QFileDialog, QSplitter, QMessageBox,
-                             QAbstractItemView, QApplication, QDialog, QMenu, QComboBox, QDialogButtonBox)
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDragMoveEvent
+                             QAbstractItemView, QApplication, QDialog, QMenu, QComboBox, 
+                             QDialogButtonBox, QLineEdit, QCheckBox)
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QSettings, QDateTime
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDragMoveEvent, QShortcut, QKeySequence
 
 # --- IMPORTS ---
 from components.prompt import PromptItemWidget, DroppableLineEdit
 from components.prompt.settings import ProjectSettingsDialog
 from components.prompt.generator import generate_tree_text
 from components.db_manager import DBManager
-from components.prompt_state_dialog import PromptStateDialog
+from components.prompt_state_dialog import PromptStateDialog  # Restored!
 from components.styles import apply_class, C_PRIMARY, C_BG_MAIN, C_DANGER, C_BG_SECONDARY, C_BORDER, C_TEXT_MAIN
 from components.mime_parser import DragAndDropParser
-from components.plugin_system import PluginManager
-
-# Import Core Plugins Registerer
 from components.plugin_system import PluginManager
 from components.plugins_core import register_core_plugins
 
 # --- HELPERS ---
 def find_git_ignore(start_path):
-    # ... (Keep existing implementation) ...
     current_path = os.path.abspath(start_path)
     while True:
         gitignore_path = os.path.join(current_path, '.gitignore')
@@ -35,7 +32,6 @@ def find_git_ignore(start_path):
     return None
 
 def parse_gitignore_lines(file_path):
-    # ... (Keep existing implementation) ...
     patterns = []
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -45,7 +41,6 @@ def parse_gitignore_lines(file_path):
     except: pass
     return patterns
 
-# --- NEW: Drop Selection Dialog ---
 class DropSelectionDialog(QDialog):
     def __init__(self, paths, plugin_manager, parent=None):
         super().__init__(parent)
@@ -55,50 +50,40 @@ class DropSelectionDialog(QDialog):
         self.pm = plugin_manager
         
         layout = QVBoxLayout(self)
-        
-        # Header
         label_dropped_count = QLabel(f"Dropped {len(paths)} item(s):")
         label_dropped_count.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(label_dropped_count)
         
-        # File List
         self.list_w = QListWidget()
         self.list_w.addItems([os.path.basename(p) for p in paths])
         self.list_w.setStyleSheet(f"background: {C_BG_SECONDARY}; color: {C_TEXT_MAIN}; border: 1px solid {C_BORDER};")
         self.list_w.setMinimumHeight(100)
         layout.addWidget(self.list_w)
         
-        # Logic to Detect Content Types
         has_files = any(os.path.isfile(p) for p in paths)
         has_folders = any(os.path.isdir(p) for p in paths)
         
-        # Selection
         label_select = QLabel("Import as Block Type:")
         layout.addWidget(label_select)
         self.combo = QComboBox()
         self.combo.setStyleSheet(f"background: {C_BG_SECONDARY}; color: {C_TEXT_MAIN}; border: 1px solid {C_BORDER}; padding: 5px;")
         
-        # --- Filter Plugins based on drag_types ---
         valid_count = 0
         all_plugins = self.pm.get_all_plugins()
 
         for plugin in all_plugins:
             supported = plugin.drag_types 
-            
-            # Check constraints
             if has_folders and "folder" not in supported: continue
             if has_files and "file" not in supported: continue
             
             self.combo.addItem(plugin.name, plugin.id)
             valid_count += 1
 
-            # Smart Selection Pre-set
             if has_folders and plugin.id == "core.tree":
                 self.combo.setCurrentIndex(valid_count - 1)
             elif not has_folders and has_files and plugin.id == "core.file":
                 self.combo.setCurrentIndex(valid_count - 1)
 
-        # Fallback: If no strict matches, show all (avoids locking UI)
         if valid_count == 0:
             self.combo.clear()
             self.combo.addItem("--- No matching plugins found (Showing All) ---", None)
@@ -109,7 +94,6 @@ class DropSelectionDialog(QDialog):
                 
         layout.addWidget(self.combo)
         
-        # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
@@ -118,7 +102,6 @@ class DropSelectionDialog(QDialog):
     def get_selected_plugin_id(self):
         return self.combo.currentData()
         
-# --- CUSTOM WIDGET: List with Absolute Drop Overlay ---
 class OverlayFileListWidget(QListWidget):
     filesDropped = pyqtSignal(list) 
 
@@ -128,7 +111,6 @@ class OverlayFileListWidget(QListWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         
-        # Visual Overlay for Dragging
         self.overlay = QLabel("DROP FILES OR FOLDERS HERE", self)
         self.overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -174,28 +156,30 @@ class OverlayFileListWidget(QListWidget):
             super().dropEvent(event)
 
 # --- Main Tool Class ---
-
 class PromptComposerTool(QWidget):
     statusMessage = pyqtSignal(str)
     modificationChanged = pyqtSignal(bool)
+    titleChanged = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         
         # 1. SETUP PLUGINS
         self.pm = PluginManager()
-        register_core_plugins() # Load Core (Msg, File, Tree)
         
-        # Load custom plugins from 'plugins' folder next to 'tools'
-        current_dir = os.path.dirname(os.path.abspath(__file__)) # tools/
-        root_dir = os.path.dirname(current_dir) # root/
-        plugins_dir = os.path.join(root_dir, "plugins")
-        self.pm.load_from_folder(plugins_dir)
+        # Prevent re-registering core plugins if we open multiple tabs
+        if not self.pm.get_all_plugins():
+            register_core_plugins()
+            
+            current_dir = os.path.dirname(os.path.abspath(__file__)) 
+            root_dir = os.path.dirname(current_dir) 
+            plugins_dir = os.path.join(root_dir, "plugins")
+            if os.path.exists(plugins_dir):
+                self.pm.load_from_folder(plugins_dir)
 
         self.is_modified = False
         self.current_save_name = None
         
-        # Project Settings
         self.project_settings = {
             "include_tree": False,
             "global_ignore": ".git, __pycache__, node_modules, .idea, .vscode, .venv, dist, build"
@@ -208,6 +192,7 @@ class PromptComposerTool(QWidget):
         
         # 1. Top Bar
         top_layout = QHBoxLayout()
+        
         lbl_root = QLabel("PROJECT ROOT:")
         apply_class(lbl_root, "text-primary font-bold")
         
@@ -228,6 +213,9 @@ class PromptComposerTool(QWidget):
         apply_class(self.btn_add, "font-bold")
         self.btn_add.clicked.connect(lambda: self.add_item())
         
+        self.btn_duplicate = QPushButton("DUPLICATE BLOCK")
+        self.btn_duplicate.clicked.connect(self.duplicate_selected_block)
+        
         self.btn_clear = QPushButton("CLEAR")
         self.btn_clear.clicked.connect(self.request_clear)
 
@@ -237,6 +225,7 @@ class PromptComposerTool(QWidget):
         top_layout.addWidget(btn_settings)
         top_layout.addSpacing(15)
         top_layout.addWidget(self.btn_add)
+        top_layout.addWidget(self.btn_duplicate)
         top_layout.addWidget(self.btn_clear)
         
         main_layout.addLayout(top_layout)
@@ -244,14 +233,12 @@ class PromptComposerTool(QWidget):
         # 2. Main Splitter
         splitter = QSplitter(Qt.Orientation.Vertical)
         
-        # List Widget
         self.list_widget = OverlayFileListWidget()
         self.list_widget.model().rowsMoved.connect(lambda: self.mark_as_modified())
         self.list_widget.filesDropped.connect(self.handle_files_dropped)
         self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         splitter.addWidget(self.list_widget)
 
-        # Preview Area
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
@@ -273,6 +260,7 @@ class PromptComposerTool(QWidget):
         self.options_menu = QMenu(self)
         self.options_menu.addAction("Import JSON").triggered.connect(self.import_from_json)
         self.options_menu.addAction("Export JSON").triggered.connect(self.export_to_json)
+        self.options_menu.addAction("Export to Markdown").triggered.connect(self.export_to_markdown)
         self.options_menu.addSeparator()
         self.options_menu.addAction("Import .gitignore").triggered.connect(self.import_gitignore)
         self.btn_options.setMenu(self.options_menu)
@@ -285,7 +273,11 @@ class PromptComposerTool(QWidget):
         self.btn_generate.clicked.connect(self.generate_only)
         self.btn_copy = QPushButton("COPY")
         self.btn_copy.clicked.connect(self.copy_only)
-        self.label_chr_info = QLabel("Characters: 0")
+        
+        self.cb_autocopy = QCheckBox("Auto-Copy")
+        self.cb_autocopy.setChecked(True)
+        
+        self.label_chr_info = QLabel("Chars: 0 | ~Tokens: 0")
 
         self.btn_actions = QWidget()
         actions_layout = QHBoxLayout(self.btn_actions)
@@ -293,6 +285,8 @@ class PromptComposerTool(QWidget):
         actions_layout.addWidget(self.btn_generate_copy)
         actions_layout.addWidget(self.btn_generate)
         actions_layout.addWidget(self.btn_copy)
+        actions_layout.addSpacing(10)
+        actions_layout.addWidget(self.cb_autocopy)
         actions_layout.addWidget(self.label_chr_info)
 
         bottom_bar.addWidget(self.btn_actions)
@@ -306,42 +300,32 @@ class PromptComposerTool(QWidget):
         
         self.add_item() 
 
-    # --- UPDATED: HANDLE FILES DROPPED ---
+        # KEYBOARD SHORTCUTS
+        self.shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.shortcut_save.activated.connect(self.quick_save)
+        
+        self.shortcut_gen = QShortcut(QKeySequence("Ctrl+G"), self)
+        self.shortcut_gen.activated.connect(self.generate_only)
+
     def handle_files_dropped(self, paths):
-        """Shows selection dialog (or auto-imports if only 1 option exists)."""
         if not paths: return
-        
-        # 1. Initialize Dialog (Calculates valid options internally)
         dlg = DropSelectionDialog(paths, self.pm, self)
-        
         selected_plugin_id = None
         
-        # 2. Check Logic: Auto-Import vs Show Dialog
-        # If we have exactly 1 valid option, skip the .exec() call
         if dlg.combo.count() == 1:
             selected_plugin_id = dlg.get_selected_plugin_id()
             self.statusMessage.emit(f"Auto-importing using: {self.pm.get_plugin(selected_plugin_id).name}")
         else:
-            # Multiple options or No matches (fallback mode) -> Show Dialog
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 selected_plugin_id = dlg.get_selected_plugin_id()
             else:
-                return # User cancelled
+                return 
 
-        # 3. Add Blocks if we have a valid ID
         if selected_plugin_id:
-            # Check if this plugin expects specific drag types to handle data keys
             plugin_name = self.pm.get_plugin(selected_plugin_id).id
-            
             for path in paths:
-                data = {}
-                # Generic handling: most blocks use 'path'
-                data["path"] = path 
-                
-                self.add_item({
-                    "plugin_id": selected_plugin_id,
-                    "data": data
-                })
+                data = {"path": path}
+                self.add_item({"plugin_id": selected_plugin_id, "data": data})
             
             self.mark_as_modified()
             self.statusMessage.emit(f"Added {len(paths)} items.")
@@ -355,9 +339,18 @@ class PromptComposerTool(QWidget):
         if data: widget.set_state(data)
         else: self.mark_as_modified()
 
-    # ... (Keep remaining methods: open_settings_dialog, import_gitignore, save/load, generate logic) ...
-    # They are unchanged from previous versions aside from ensuring imports exist.
-    
+    def duplicate_selected_block(self):
+        current_item = self.list_widget.currentItem()
+        if not current_item:
+            QMessageBox.information(self, "Info", "Select a block to duplicate first.")
+            return
+        
+        w = self.list_widget.itemWidget(current_item)
+        if w:
+            data = w.get_state()
+            self.add_item(data)
+            self.statusMessage.emit("Block duplicated.")
+
     def open_settings_dialog(self):
         dlg = ProjectSettingsDialog(self, self.project_settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -370,6 +363,7 @@ class PromptComposerTool(QWidget):
         self.txt_result.clear()
         self.lbl_outdated.hide()
         self.current_save_name = None
+        self.titleChanged.emit("PROMPT BUILDER")
         self.mark_as_modified()
 
     def import_gitignore(self):
@@ -398,9 +392,6 @@ class PromptComposerTool(QWidget):
             QMessageBox.information(self, "Success", f"Imported {added} patterns.")
 
     def refresh_all_paths(self):
-        # We can't force refresh easily on plugin widgets without a standardized 'refresh' method,
-        # but most update on interaction. 
-        # Ideally, we could add a `refresh_ui()` to BlockPluginInterface.
         pass
 
     def handle_unsaved_changes(self):
@@ -422,12 +413,40 @@ class PromptComposerTool(QWidget):
             success, msg = DBManager.save_prompt(save_name, data)
             if success:
                 self.current_save_name = save_name
+                self.titleChanged.emit(save_name.upper())
+                
+                # Update QSettings Registry with the Date
+                settings = QSettings("PyTools", "PromptBuilder")
+                registry = settings.value("prompt_registry", {})
+                if not isinstance(registry, dict): registry = {}
+                registry[save_name] = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+                settings.setValue("prompt_registry", registry)
+                
                 self.statusMessage.emit(f"Saved: {save_name}")
                 self.set_modified(False)
                 return True
             else:
                 QMessageBox.critical(self, "Error", msg)
         return False
+    
+    def quick_save(self):
+        """Used by Ctrl+S shortcut"""
+        if self.current_save_name:
+            data = self._gather_data()
+            success, msg = DBManager.save_prompt(self.current_save_name, data)
+            if success:
+                self.set_modified(False)
+                self.statusMessage.emit(f"Quick saved: {self.current_save_name}")
+                
+                settings = QSettings("PyTools", "PromptBuilder")
+                registry = settings.value("prompt_registry", {})
+                if not isinstance(registry, dict): registry = {}
+                registry[self.current_save_name] = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+                settings.setValue("prompt_registry", registry)
+            else:
+                QMessageBox.critical(self, "Error", msg)
+        else:
+            self.save_content()
 
     def load_content(self):
         if not self.handle_unsaved_changes(): return
@@ -438,6 +457,15 @@ class PromptComposerTool(QWidget):
             if data:
                 self._load_data(data)
                 self.current_save_name = load_name
+                self.titleChanged.emit(load_name.upper())
+                
+                # Update QSettings Registry Date when loaded
+                settings = QSettings("PyTools", "PromptBuilder")
+                registry = settings.value("prompt_registry", {})
+                if not isinstance(registry, dict): registry = {}
+                registry[load_name] = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+                settings.setValue("prompt_registry", registry)
+                
                 self.set_modified(False)
                 self.statusMessage.emit(f"Loaded: {load_name}")
 
@@ -448,6 +476,7 @@ class PromptComposerTool(QWidget):
             try:
                 with open(fname, 'r') as f: self._load_data(json.load(f))
                 self.current_save_name = None
+                self.titleChanged.emit("IMPORTED PROMPT")
                 self.mark_as_modified()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Invalid JSON: {e}")
@@ -458,6 +487,20 @@ class PromptComposerTool(QWidget):
         if fname:
             with open(fname, 'w') as f: json.dump(data, f, indent=2)
 
+    def export_to_markdown(self):
+        res = self.txt_result.toPlainText()
+        if not res and self.list_widget.count() > 0: res = self.generate_only()
+        if not res: return
+        
+        default_name = f"{self.current_save_name}.md" if self.current_save_name else "prompt_export.md"
+        fname, _ = QFileDialog.getSaveFileName(self, "Export Markdown", default_name, "Markdown (*.md);;Text (*.txt)")
+        if fname:
+            try:
+                with open(fname, 'w', encoding='utf-8') as f: f.write(res)
+                self.statusMessage.emit(f"Exported to {fname}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to export: {e}")
+
     def _gather_data(self):
         data = { "project_root": self.ln_root.text(), "settings": self.project_settings, "items": [] }
         for i in range(self.list_widget.count()):
@@ -466,7 +509,6 @@ class PromptComposerTool(QWidget):
         return data
 
     def _load_data(self, data):
-        # Handle Legacy List format
         if isinstance(data, list):
             items = data
             root = ""
@@ -485,11 +527,8 @@ class PromptComposerTool(QWidget):
 
     def generate_only(self):
         output = []
-        
-        # Get Global Ignore Setting
         global_ignores = self.project_settings.get("global_ignore", "")
 
-        # Prepend Tree if enabled globally
         if self.project_settings.get("include_tree"):
             root = self.get_project_root()
             if root and os.path.exists(root):
@@ -498,11 +537,9 @@ class PromptComposerTool(QWidget):
                     output.append(f"PROJECT STRUCTURE:\n```\n{tree}\n```\n{'-'*30}")
                 except Exception as e: output.append(f"[Error tree: {e}]")
         
-        # Plugins
         for i in range(self.list_widget.count()):
             w = self.list_widget.itemWidget(self.list_widget.item(i))
             if w:
-                # PASS THE GLOBAL IGNORE HERE
                 block = w.get_compiled_output(global_ignore=global_ignores)
                 if block.strip(): output.append(block)
 
@@ -510,7 +547,16 @@ class PromptComposerTool(QWidget):
         self.txt_result.setText(res)
         self.lbl_outdated.setVisible(False)
         self.statusMessage.emit("Generated.")
-        self.label_chr_info.setText(f"Characters: {len(res)}")
+        
+        # Token Count Estimator 
+        chars = len(res)
+        tokens = chars // 4
+        self.label_chr_info.setText(f"Chars: {chars} | ~Tokens: {tokens}")
+        
+        if self.cb_autocopy.isChecked():
+            QApplication.clipboard().setText(res)
+            self.statusMessage.emit("Generated & Copied.")
+            
         return res
     
     def copy_only(self):

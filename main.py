@@ -1,6 +1,6 @@
 import traceback
 import sys
-# Note: specific tools are imported later or lazily to allow dependency checking
+import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, 
                              QWidget, QHBoxLayout, QStyle, QMenu, QLabel, QMessageBox)
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent
@@ -13,7 +13,6 @@ from components.db_manager import DBManager
 from components.dep_checker import DependencyChecker 
 
 # Tools (Standard)
-
 def launch_prompt_builder_tool():
     try:
         from tools.prompt_builder import PromptComposerTool
@@ -32,15 +31,24 @@ def launch_db_editor_tool():
         traceback.print_exc()
         raise RuntimeError(f"Failed to launch Database Editor Tool:\n{str(e)}\n\n{traceback.format_exc()}")
     
-def launch_audio_visualizer_tool():
+# def launch_audio_visualizer_tool():
+#     try:
+#         from tools.audio_viz import AudioVisualizerTool
+#         widget = AudioVisualizerTool()
+#         return widget
+#     except Exception as e:
+#         traceback.print_exc()
+#         raise RuntimeError(f"Failed to launch Audio Visualizer Tool:\n{str(e)}\n\n{traceback.format_exc()}")
+
+def launch_gallery_tool():
     try:
-        from tools.audio_viz import AudioVisualizerTool
-        widget = AudioVisualizerTool()
+        from tools.ui_plus_gallery import GalleryPage
+        widget = GalleryPage()
         return widget
     except Exception as e:
         traceback.print_exc()
-        raise RuntimeError(f"Failed to launch Audio Visualizer Tool:\n{str(e)}\n\n{traceback.format_exc()}")
-    
+        raise RuntimeError(f"Failed to launch Gallery Tool:\n{str(e)}\n\n{traceback.format_exc()}")
+
 def launch_help_viewer_tool():
     try:
         from tools.help import HelpViewerTool
@@ -49,6 +57,7 @@ def launch_help_viewer_tool():
     except Exception as e:
         traceback.print_exc()
         raise RuntimeError(f"Failed to launch Help Viewer Tool:\n{str(e)}\n\n{traceback.format_exc()}")
+
 class AppShell(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -101,10 +110,15 @@ class AppShell(QMainWindow):
         act_other_menu = tools_menu.addMenu("Other Tools")
 
         # Audio Viz Tool
-        act_viz = QAction("Audio Visualizer", self)
+        # act_viz = QAction("Audio Visualizer", self)
         # We connect to a specific method instead of a lambda with the class directly
-        act_viz.triggered.connect(lambda: self.safe_launch_tool_fn(launch_audio_visualizer_tool, "AUDIO VISUALIZER")) 
-        act_other_menu.addAction(act_viz)
+        # act_viz.triggered.connect(lambda: self.safe_launch_tool_fn(launch_audio_visualizer_tool, "AUDIO VISUALIZER")) 
+        # act_other_menu.addAction(act_viz)
+
+        # Gallery Tool
+        act_gallery = QAction("UI + Gallery", self)
+        act_gallery.triggered.connect(lambda: self.safe_launch_tool_fn(launch_gallery_tool, "GALLERY"))
+        act_other_menu.addAction(act_gallery)
 
         tools_menu.addSeparator()
         help_action = QAction("Help / Documentation", self)
@@ -141,28 +155,42 @@ class AppShell(QMainWindow):
             traceback.print_exc()
             QMessageBox.critical(self, "Launch Error", f"Error with {title}:\n{str(e)}")
         
-
     def add_tab(self, widget, title):
         try:
             index = self.tabs.addTab(widget, title)
             self.tabs.setCurrentIndex(index)
             
+            # Save the base title to handle asterisks and renames dynamically
+            widget._base_title = title 
+            
             if hasattr(widget, 'statusMessage'):
                 widget.statusMessage.connect(self.status_label.setText)
             if hasattr(widget, 'modificationChanged'):
                 widget.modificationChanged.connect(lambda s, w=widget: self.update_tab_title(w, s))
+            if hasattr(widget, 'titleChanged'):
+                widget.titleChanged.connect(lambda t, w=widget: self.update_base_tab_title(w, t))
         except Exception as e:
             traceback.print_exc()
             QMessageBox.critical(self, "Tab Error", f"Failed to add tab:\n{str(e)}")
             if widget:
                 widget.deleteLater()
 
+    def update_base_tab_title(self, widget, new_name):
+        try:
+            index = self.tabs.indexOf(widget)
+            if index == -1: return
+            widget._base_title = new_name
+            is_mod = getattr(widget, 'is_modified', False)
+            self.tabs.setTabText(index, f"{new_name} *" if is_mod else new_name)
+        except Exception:
+            pass
+
     def update_tab_title(self, widget, is_modified):
         try:
             index = self.tabs.indexOf(widget)
             if index == -1: return
-            txt = self.tabs.tabText(index).replace(" *", "")
-            self.tabs.setTabText(index, f"{txt} *" if is_modified else txt)
+            base_name = getattr(widget, '_base_title', self.tabs.tabText(index).replace(" *", ""))
+            self.tabs.setTabText(index, f"{base_name} *" if is_modified else base_name)
         except Exception:
             pass 
 

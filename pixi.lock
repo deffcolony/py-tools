@@ -3,8 +3,6 @@ environments:
   default:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
-    indexes:
-    - https://pypi.org/simple
     options:
       pypi-prerelease-mode: if-necessary-or-explicit
     packages:
@@ -74,7 +72,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/vc14_runtime-14.44.35208-h818238b_34.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/vcomp14-14.44.35208-h818238b_34.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zstd-1.5.7-h534d264_6.conda
-      - pypi: https://files.pythonhosted.org/packages/5e/b6/e672b5dcf227895c6fbbad265c82214325819ecb419a89b1955a690bc79e/PyAudioWPatch-0.2.12.7-cp311-cp311-win_amd64.whl
 packages:
 - conda: https://conda.anaconda.org/conda-forge/win-64/bzip2-1.0.8-h0ad9c76_8.conda
   sha256: d882712855624641f48aa9dc3f5feea2ed6b4e6004585d3616386a18186fe692
@@ -708,12 +705,6 @@ packages:
   - pkg:pypi/ply?source=hash-mapping
   size: 49052
   timestamp: 1733239818090
-- pypi: https://files.pythonhosted.org/packages/5e/b6/e672b5dcf227895c6fbbad265c82214325819ecb419a89b1955a690bc79e/PyAudioWPatch-0.2.12.7-cp311-cp311-win_amd64.whl
-  name: pyaudiowpatch
-  version: 0.2.12.7
-  sha256: 57a33f6549db2a3161c155526eccc30ca82d4188f9277dfcbb15055c9a5a53e0
-  requires_dist:
-  - numpy ; extra == 'test'
 - conda: https://conda.anaconda.org/conda-forge/win-64/pyqt6-6.8.1-py311h3e6a449_1.conda
   sha256: 18ec58c7f9a949852e9ea8ea466c3192f667dcc1d8e8b554f641a30f5bb74250
   md5: 5c4a48944bc3a690877f67dae24ffa4d
